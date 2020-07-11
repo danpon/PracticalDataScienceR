@@ -1,0 +1,488 @@
+---
+title: "Choix et évaluation des modèles"
+author: "Daniel Pont"
+date: "02/07/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Choix et évaluation des modèles
+
+## 2. Evaluation des modèles
+
+### 2.3 Evaluation des modèles de classification
+
+#### 2.3.1 Création d'un modèle de régression logistique
+
+```{r 2.3.1, warning=FALSE,message=FALSE}
+# lecture des données
+spamD <- read.table('data/spamD.tsv',header=T,sep='\t')
+str(spamD)
+
+# séparation des données d'apprentissage et des données de test
+spamTrain <-subset(spamD,spamD$rgroup >= 10)
+spamTest <- subset(spamD,spamD$rgroup < 10)
+
+# constitution des variables explicatives
+spamVars <- setdiff(colnames(spamD), list('rgroup','spam'))
+
+# création du modèle de régression logistique
+spamFormula <- as.formula(paste('spam == "spam"',
+    paste(spamVars, collapse = ' + '),sep = ' ~ '))
+
+spamModel <- glm(spamFormula,family = binomial(link = 'logit'), data = spamTrain)
+```
+
+#### 2.3.2 Application du modèle
+
+```{r 2.3.2, warning=FALSE,message=FALSE}
+# calcul des prédictions sur les données d'apprentissage et de test
+spamTrain$pred <- predict(spamModel,newdata = spamTrain, type = 'response')
+spamTest$pred <- predict(spamModel,newdata = spamTest, type = 'response')
+
+# échantillon extrait des prédictions sur les données de test
+sample <- spamTest[c(7,35,224,327), c('spam','pred')]
+print(sample)
+```
+
+#### 2.3.3 Matrice de confusion
+
+```{r 2.3.3, warning=FALSE,message=FALSE}
+confmat_spam <- table(truth = spamTest$spam,
+                      prediction = ifelse(spamTest$pred > 0.5,"spam", "non-spam"))
+
+print(confmat_spam)
+```
+
+#### 2.3.4 Saisie de la matrice de confusion Askimet "à la main"
+
+```{r 2.3.4, warning=FALSE,message=FALSE}
+confmat_akismet <- as.table(matrix(data=c(288-1,17,1,13882-17),nrow=2,ncol=2))
+rownames(confmat_akismet) <- rownames(confmat_spam)
+colnames(confmat_akismet) <- colnames(confmat_spam)
+print(confmat_akismet)
+```
+
+#### 2.3.5 Evolution des performances quand la proportion de spams change
+
+```{r 2.3.5, warning=FALSE,message=FALSE}
+set.seed(234641)
+N <- nrow(spamTest)
+pull_out_ix <- sample.int(N, 100, replace=FALSE)
+removed = spamTest[pull_out_ix,]
+
+get_performance <- function(sTest) {
+    proportion <- mean(sTest$spam == "spam")
+    confmat_spam <- table(truth = sTest$spam,
+    prediction = ifelse(sTest$pred>0.5,
+        "spam",
+        "non-spam"))
+
+precision <- confmat_spam[2,2]/sum(confmat_spam[,2])
+recall <- confmat_spam[2,2]/sum(confmat_spam[2,])
+
+list( spam_proportion = proportion,
+      confmat_spam = confmat_spam,
+      precision = precision, 
+      recall = recall)
+}
+sTest <- spamTest[-pull_out_ix,]
+
+# jeu de données avec la même proportion de spams que les données d'appprentissage
+get_performance(sTest)
+
+# ajout de données pour augmenter la proportion de spams
+get_performance(rbind(sTest, subset(removed, spam=="spam")))
+
+# ajout de données pour diminuer la proportion de spams
+get_performance(rbind(sTest, subset(removed, spam=="non-spam")))
+```
+
+### 2.4 Évaluation des modèles de notation
+
+#### 2.4.1 Ajustement du modèle et prédictions
+
+```{r 2.4.1, warning=FALSE,message=FALSE}
+crickets <- read.csv("data/crickets.csv")
+
+str(crickets)
+
+cricket_model <- lm(temperatureF ~ chirp_rate, data=crickets)
+crickets$temp_pred <- predict(cricket_model, newdata=crickets)
+```
+
+#### 2.4.2 Erreur quadratique moyene (RMSE)
+
+```{r 2.4.2, warning=FALSE,message=FALSE}
+error_sq <- (crickets$temp_pred - crickets$temperatureF)^2
+( RMSE <- sqrt(mean(error_sq)) )
+```
+
+#### 2.4.3 Coefficient de détermination (R^2)
+
+```{r 2.4.3, warning=FALSE,message=FALSE}
+error_sq <- (crickets$temp_pred - crickets$temperatureF)^2
+numerator <- sum(error_sq)
+delta_sq <- (mean(crickets$temperatureF) - crickets$temperatureF)^2
+denominator = sum(delta_sq)
+(R2 <- 1 - numerator/denominator)
+```
+
+### 2.5 Évaluation des modèles probabilistes
+
+#### 2.5.1 Courbe à double densité
+
+```{r 2.5.1, warning=FALSE,message=FALSE}
+library(WVPlots)
+
+DoubleDensityPlot(spamTest,
+  xvar = "pred",
+  truthVar = "spam",
+  title = "Distribution of scores for spam filter")
+```
+
+#### 2.5.2 Courbe ROC (Receiver Operating Characteristic)
+
+```{r 2.5.2, warning=FALSE,message=FALSE}
+library(WVPlots)
+
+ROCPlot(spamTest,
+  xvar = 'pred',
+  truthVar = 'spam',
+  truthTarget = 'spam',
+  title = 'Spam filter test performance')
+
+library(sigr)
+calcAUC(spamTest$pred, spamTest$spam=='spam')
+```
+
+#### 2.5.3 Calcul de la log-vraisemblance
+
+```{r 2.5.3, warning=FALSE,message=FALSE}
+
+ylogpy <- function(y, py) {
+    logpy = ifelse(py > 0, log(py), 0)
+    y*logpy
+}
+
+y <- spamTest$spam == 'spam'
+
+sum(ylogpy(y, spamTest$pred) + ylogpy(1-y, 1-spamTest$pred))
+
+# pour info, la log vraisemblance do modèle nul est la suivante :
+(pNull <- mean(spamTrain$spam == 'spam'))
+sum(ylogpy(y, pNull) + ylogpy(1-y, 1-pNull))
+```
+
+#### 2.5.4 Calcul de la déviance et du pseudo R^2
+
+```{r 2.5.4, warning=FALSE,message=FALSE}
+library(sigr)
+
+(deviance <- calcDeviance(spamTest$pred, spamTest$spam == 'spam'))
+(nullDeviance <- calcDeviance(pNull, spamTest$spam == 'spam'))
+(pseudoR2 <- 1 - deviance/nullDeviance)
+```
+
+
+## 3. Local interpretable model-agnostic explanations (LIME)
+
+### 3.2 Exemple
+
+#### 3.2.1 Chargement des données
+
+```{r 3.2.1, warning=FALSE,message=FALSE}
+iris <- iris
+iris$class <- as.numeric(iris$Species == "setosa")
+set.seed(2345)
+intrain <- runif(nrow(iris)) < 0.75
+train <- iris[intrain,]
+test <- iris[!intrain,]
+```
+
+#### 3.2.2 Ajustement du modèle
+
+```{r 3.2.2, warning=FALSE,message=FALSE}
+library(xgboost)
+
+fit_iris_example = function(variable_matrix, labelvec) {
+
+  cv = xgb.cv(variable_matrix, label = labelvec,
+              params=list(
+                objective="binary:logistic"
+              ),
+              nfold=5,
+              nrounds=100,
+              print_every_n=10,
+              metrics="logloss")
+
+  evalframe = as.data.frame(cv$evaluation_log)
+  NROUNDS = which.min(evalframe$test_logloss_mean)
+
+  model = xgboost(data=variable_matrix, label=labelvec,
+                  params=list(
+                    objective="binary:logistic"
+                  ),
+                  nrounds=NROUNDS,
+                  verbose=FALSE)
+
+  model
+}
+
+input <- as.matrix(train[, 1:4])
+model <- fit_iris_example(input, train$class)
+```
+
+#### 3.2.3 Evaluation du modèle
+
+```{r 3.2.3, warning=FALSE,message=FALSE}
+predictions <- predict(model, newdata=as.matrix(test[,1:4]))
+
+teframe <- data.frame(isSetosa = ifelse(test$class == 1,
+                          "setosa",
+                          "not setosa"),
+                      pred = ifelse(predictions > 0.5,
+                          "setosa",
+                          "not setosa"))
+
+with(teframe, table(truth=isSetosa, pred=pred))
+```
+
+#### 3.2.4 Construction des explications LIME à partir du modèle et des données d'apprentissage
+
+```{r 3.2.4, warning=FALSE,message=FALSE}
+library(lime)
+explainer <- lime(train[,1:4],
+                  model = model,
+                  bin_continuous = TRUE,
+                  n_bins = 10)
+```
+
+#### 3.2.5 Exemple d'explication sur un échantilllon simple
+
+```{r 3.2.5, warning=FALSE,message=FALSE}
+
+(example <- test[5, 1:4, drop=FALSE])
+
+# class 1 = setosa
+test$class[5]
+
+round(predict(model, newdata = as.matrix(example)))
+
+explanation <- lime::explain(example,
+                    explainer,
+                    n_labels = 1, # 1 pour une classification binaire
+                    n_features = 4)
+
+plot_features(explanation)
+```
+
+#### 3.2.6 Autres exemples d'explicaion LIME
+
+```{r 3.2.6, warning=FALSE,message=FALSE}
+(example <- test[c(13, 24), 1:4])
+
+# class 0 = not setosa
+test$class[c(13,24)]
+
+round(predict(model, newdata=as.matrix(example)))
+
+explanation <- explain(example,
+                        explainer,
+                        n_labels = 1,
+                        n_features = 4,
+                        kernel_width = 0.5)
+
+plot_features(explanation)
+```
+
+### 3.3 LIME pour les classifications textuelles
+
+#### 3.3.1 Chargement des données (avis IMDB)
+
+```{r 3.3.1, warning=FALSE,message=FALSE}
+library(zeallot)
+c(texts, labels) %<-% readRDS("data/IMDBtrain.RDS")
+
+# avis postif
+list(text = texts[1], label = labels[1])
+
+# avis négatif
+list(text = texts[12], label = labels[12])
+```
+
+### 3.4 Apprentissage du modèle de classification textuel
+
+#### 3.4.1 Pré-traiteent du texte et construction du modèle
+
+```{r 3.4.1, warning=FALSE,message=FALSE}
+library(wrapr)
+library(xgboost)
+# if this fails, make sure text2vec is installed:
+# install.packages("text2vec")
+library(text2vec)
+
+
+#
+# function that takes a training corpus (texts)
+# and returns a vocabulary: 10,000 words that
+# appear in at least 10% of the documents, but
+# fewer than half.
+#
+create_pruned_vocabulary <- function(texts) {
+  # create an iterator over the training set
+  it_train <- itoken(texts,
+                    preprocessor = tolower,
+                    tokenizer = word_tokenizer,
+                    ids = names(texts),
+                    progressbar = FALSE)
+
+  # tiny stop word list
+  stop_words <- qc(the, a, an, this, that, those, i, you)
+  vocab <- create_vocabulary(it_train, stopwords = stop_words)
+
+  # prune the vocabulary
+  # prune anything too common (appears in over half the documents)
+  # prune anything too rare (appears in less than 0.1% of the documents)
+  # limit to 10,000 words after that
+  pruned_vocab <- prune_vocabulary(
+    vocab,
+    doc_proportion_max = 0.5,
+    doc_proportion_min = 0.001,
+    vocab_term_max = 10000
+  )
+
+  pruned_vocab
+}
+
+
+# take a corpus and a vocabulary
+# and return a sparse matrix (of the kind xgboost will take)
+# rows are documents, columns are vocab words
+# this representation loses the order or the words in the documents
+make_matrix <- function(texts, vocab) {
+  iter <- itoken(texts,
+                preprocessor = tolower,
+                tokenizer = word_tokenizer,
+                ids = names(texts),
+                progressbar = FALSE)
+  create_dtm(iter, vocab_vectorizer(vocab))
+}
+
+#
+# Input:
+# - dtm_train: document term matrix of class dgCmatrix
+# - labelvvec: numeric vector of class labels (1 is positive class)
+#
+# Returns:
+# - xgboost model
+#
+fit_imdb_model <- function(dtm_train, labels) {
+  # run this estimate the number of rounds
+  # needed for xgboost
+  # cv <- xgb.cv(dtm_train, label = labels,
+  #             params=list(
+  #               objective="binary:logistic"
+  #               ),
+  #             nfold=5,
+  #             nrounds=500,
+  #             print_every_n=10,
+  #             metrics="logloss")
+  #
+  # evalframe <- as.data.frame(cv$evaluation_log)
+  # NROUNDS <- which.min(evalframe$test_logloss_mean)
+
+  # we've run it already, so here's a good answer
+  NROUNDS <- 371
+
+
+  model <- xgboost(data=dtm_train, label=labels,
+                  params=list(
+                    objective="binary:logistic"
+                  ),
+                  nrounds=NROUNDS,
+                  verbose=FALSE)
+
+  model
+}
+
+vocab <- create_pruned_vocabulary(texts)
+dtm_train <- make_matrix(texts, vocab)
+model <- fit_imdb_model(dtm_train, labels)
+```
+
+#### 3.4.2 Evaluation de la classification
+
+```{r 3.4.2, warning=FALSE,message=FALSE}
+c(test_txt, test_labels) %<-% readRDS("data/IMDBtest.RDS")
+
+dtm_test <- make_matrix(test_txt, vocab)
+
+predicted <- predict(model, newdata=dtm_test)
+
+teframe <- data.frame(true_label = test_labels, pred = predicted)
+(cmat <- with(teframe, table(truth=true_label, pred=pred > 0.5)))
+
+sum(diag(cmat))/sum(cmat)
+
+library(WVPlots)
+
+DoubleDensityPlot(teframe, "pred", "true_label",
+    "Distribution of test prediction scores")
+```
+
+### 3.5 Explication des prédictions
+
+#### 3.5.1 Construction de l'instance LIME
+
+```{r 3.5.1, warning=FALSE,message=FALSE}
+explainer <- lime(texts, 
+                  model = model,
+                  preprocess = function(x) make_matrix(x, vocab))
+```
+
+#### 3.5.2 Explication de la prédiction sur un avis
+
+```{r 3.5.2, warning=FALSE,message=FALSE}
+casename <- "test_19552";
+sample_case <- test_txt[casename]
+
+pred_prob <- predict(model, make_matrix(sample_case, vocab))
+
+list( text = sample_case,
+      label = test_labels[casename],
+      prediction = round(pred_prob) )
+
+explanation <- lime::explain(sample_case,
+                  explainer,
+                  n_labels = 1,
+                  n_features = 5)
+                plot_features(explanation)
+```
+
+#### 3.5.3 Explication de la prédiction sur d'autres avis
+```{r 3.5.3, warning=FALSE,message=FALSE}
+casenames <- c("test_12034", "test_10294")
+sample_cases <- test_txt[casenames]
+
+pred_probs <- predict(model, newdata=make_matrix(sample_cases, vocab))
+
+list( texts = sample_cases,
+      labels = test_labels[casenames],
+      predictions = round(pred_probs))
+
+explanation <- lime::explain( sample_cases,
+                              explainer,
+                              n_labels = 1,
+                              n_features = 5)
+
+plot_features(explanation)
+plot_text_explanations(explanation)
+```

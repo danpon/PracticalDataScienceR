@@ -1,0 +1,485 @@
+---
+title: "Régression linéaire et logistique"
+author: "Daniel Pont"
+date: "03/07/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Régression linéaire et logistique
+
+## 1. Régression linéaire
+
+### 1.1 Exemple
+
+#### 1.1.1 Chargement des données et création d'un modèle
+
+```{r 1.1.1, warning=FALSE,message=FALSE}
+
+# 2016 US Census PUMS dataset
+# le but est de prédire le salaire (PINCP) à partir de pramaètres 
+# tels que l'age, le sex,...
+
+psub <- readRDS("data/psub.RDS")
+set.seed(3454351)
+gp <- runif(nrow(psub))
+dtrain <- subset(psub, gp >= 0.5)
+dtest <- subset(psub, gp < 0.5)
+
+model <- lm(log10(PINCP) ~ AGEP + SEX + COW + SCHL, data = dtrain)
+
+dtest$predLogPINCP <- predict(model, newdata = dtest)
+dtrain$predLogPINCP <- predict(model, newdata = dtrain)
+```
+
+#### 1.1.2 Représentation du log du revenu réel en fonction du log du revenu prédit
+
+```{r 1.1.2, warning=FALSE,message=FALSE}
+library(ggplot2)
+ggplot(data = dtest, aes(x = predLogPINCP, y = log10(PINCP))) +
+    geom_point(alpha = 0.2, color = "darkgray") +
+    geom_smooth(color = "darkblue") +
+    geom_line(aes(x = log10(PINCP),
+    y = log10(PINCP)),
+    color = "blue", linetype = 2) +
+    coord_cartesian(xlim = c(4, 5.25),
+    ylim = c(3.5, 5.5))
+```
+
+#### 1.1.3 Représentation des erreurs résiduelles en fonction du log du revenu prédit
+
+```{r 1.1.3, warning=FALSE,message=FALSE}
+ggplot(data = dtest, aes(x = predLogPINCP,
+        y = predLogPINCP - log10(PINCP))) +
+        geom_point(alpha = 0.2, color = "darkgray") +
+        geom_smooth(color = "darkblue") +
+        ylab("residual error (prediction - actual)")
+```
+
+#### 1.1.4 Coefficient de détermination (R^2)
+
+```{r 1.1.4, warning=FALSE,message=FALSE}
+rsq <- function(y, f) { 1 - sum((y - f)^2)/sum((y - mean(y))^2) }
+
+rsq(log10(dtrain$PINCP), dtrain$predLogPINCP)
+rsq(log10(dtest$PINCP), dtest$predLogPINCP)
+```
+
+
+#### 1.1.5 Erreur quadratique moyenne (RMSE)
+
+```{r 1.1.5, warning=FALSE,message=FALSE}
+rmse <- function(y, f) { sqrt(mean( (y-f)^2 )) }
+
+rmse(log10(dtrain$PINCP), dtrain$predLogPINCP)
+rmse(log10(dtest$PINCP), dtest$predLogPINCP)
+```
+
+#### 1.1.6 Résumé des erreurs résiduelles
+
+```{r 1.1.6, warning=FALSE,message=FALSE}
+( resids_train <- summary(log10(dtrain$PINCP) - predict(model, newdata = dtrain)) )
+
+( resids_test <- summary(log10(dtest$PINCP) - predict(model, newdata = dtest)) )
+```
+
+## 2. Régression logistique
+
+### 2.1 Exemple
+
+#### 2.1.1 Chargement des données
+
+```{r 2.1.1, warning=FALSE,message=FALSE}
+load("data/NatalRiskData.rData")
+
+train <- sdata[sdata$ORIGRANDGROUP <= 5 , ]
+test <- sdata[sdata$ORIGRANDGROUP > 5, ]
+```
+
+#### 2.1.2 Construction et du modèle de régression logisique
+
+```{r 2.1.2, warning=FALSE,message=FALSE}
+complications <- c("ULD_MECO","ULD_PRECIP","ULD_BREECH")
+
+riskfactors <- c("URF_DIAB", "URF_CHYPER", "URF_PHYPER","URF_ECLAM")
+
+y <- "atRisk"
+x <- c( "PWGT",
+        "UPREVIS",
+        "CIG_REC",
+        "GESTREC3",
+        "DPLURAL",
+        complications,
+        riskfactors)
+
+library(wrapr)
+
+fmla <- mk_formula(y, x)
+
+print(fmla)
+
+model <- glm(fmla, data = train, family = binomial(link = "logit"))
+```
+
+#### 2.1.3 Application du modèle 
+
+```{r 2.1.3, warning=FALSE,message=FALSE}
+train$pred <- predict(model, newdata=train, type = "response")
+test$pred <- predict(model, newdata=test, type="response")
+```
+
+#### 2.1.4 Calcul des probabilités marginales
+
+```{r 2.1.4, warning=FALSE,message=FALSE}
+sum(train$atRisk == TRUE)
+
+sum(train$pred)
+
+premature <- subset(train, GESTREC3 == "< 37 weeks")
+
+sum(premature$atRisk == TRUE)
+
+sum(premature$pred)
+```
+
+#### 2.1.5 Représentation des scores de prédiction groupés par classe résultat
+
+```{r 2.1.5, warning=FALSE,message=FALSE}
+library(WVPlots)
+
+DoubleDensityPlot(train, "pred", "atRisk",
+            title = "Distribution of natality risk scores")
+```
+
+#### 2.1.6 Exploration des compromis du modèle
+
+```{r 2.1.6, warning=FALSE,message=FALSE}
+library("WVPlots")
+library("ggplot2")
+
+plt <- PRTPlot(train, "pred", "atRisk", TRUE,
+plotvars = c("enrichment", "recall"),
+thresholdrange = c(0,0.05),
+title = "Enrichment/recall vs. threshold for natality model")
+plt + geom_vline(xintercept = 0.02, color="red", linetype = 2)
+
+```
+
+#### 2.1.7 Coefficient de régression
+
+```{r 2.1.7, warning=FALSE,message=FALSE}
+coefficients(model)
+```
+
+#### 2.1.8 Résumé du modèle
+
+```{r 2.1.8, warning=FALSE,message=FALSE}
+summary(model)
+```
+
+#### 2.1.9 Calcul de la déviance
+
+```{r 2.1.9, warning=FALSE,message=FALSE}
+loglikelihood <- function(y, py) {
+    sum(y * log(py) + (1-y)*log(1 - py))
+}
+
+(pnull <- mean(as.numeric(train$atRisk)) )
+
+(null.dev <- -2 *loglikelihood(as.numeric(train$atRisk), pnull) )
+
+model$null.deviance
+
+pred <- predict(model, newdata = train, type = "response")
+
+(resid.dev <- -2 * loglikelihood(as.numeric(train$atRisk), pred) )
+
+model$deviance
+
+testy <- as.numeric(test$atRisk)
+
+testpred <- predict(model, newdata = test, type = "response")
+
+( pnull.test <- mean(testy) )
+
+( null.dev.test <- -2 * loglikelihood(testy, pnull.test) )
+
+( resid.dev.test <- -2 * loglikelihood(testy, testpred) )
+```
+
+#### 2.1.10 Calcul du pseudo R^2
+
+```{r 2.1.10, warning=FALSE,message=FALSE}
+pr2 <- 1 - (resid.dev / null.dev)
+print(pr2)
+pr2.test <- 1 - (resid.dev.test / null.dev.test)
+print(pr2.test)
+
+```
+
+#### 2.1.11 Calcul du Chi2
+
+```{r 2.1.11, warning=FALSE,message=FALSE}
+
+# df = degree of freedom
+
+(df.null <- dim(train)[[1]] - 1 )
+
+( df.model <- dim(train)[[1]] - length(model$coefficients) )
+
+( delDev <- null.dev - resid.dev )
+
+( deldf <- df.null - df.model )
+
+( deldf <- df.null - df.model )
+```
+
+
+#### 2.1.12 Calcul de l'AIC (Akaike information criterion)
+
+```{r 2.1.12, warning=FALSE,message=FALSE}
+aic <- 2 * (length(model$coefficients) -loglikelihood(as.numeric(train$atRisk), pred))
+aic
+```
+
+## 3. Régularisation
+
+### 3.1 Exemple de séparation quasi-complète
+
+On parle de séparation complète lorsqu'une combinaison linéaire de prédicteurs génère une prévision parfaite de la variable de réponse.
+La séparation quasi-complète est semblable à la séparation complète. Les prédicteurs génèrent une prévision parfaite de la variable de réponse pour la plupart des valeurs des prédicteurs, mais pas pour toutes.
+
+
+#### 3.1.1 Préparation des données
+
+Le datataset "cars" présente le classement de differentes voitures en fonction de paramètres
+tels que la sécurité, le prix, etc.
+
+```{r 3.1.1, warning=FALSE,message=FALSE}
+cars <- read.table(
+    'data/car.data.csv',
+    sep = ',',
+    header = TRUE,
+    stringsAsFactor = TRUE
+)
+
+vars <- setdiff(colnames(cars), "rating")
+cars$fail <- cars$rating == "unacc"
+outcome <- "fail"
+
+set.seed(24351)
+gp <- runif(nrow(cars))
+
+library(zeallot)
+
+c(cars_test, cars_train) %<-% split(cars, gp < 0.7)
+
+nrow(cars_test)
+nrow(cars_train)
+```
+
+#### 3.1.2 Construction d'un modèle de régression logistique
+
+```{r 3.1.2, warning=TRUE,message=FALSE}
+library(wrapr)
+(fmla <- mk_formula(outcome, vars) )
+
+model_glm <- glm(fmla,
+                data = cars_train,
+                family = binomial)
+```
+
+Le warning "glm.fit: fitted probabilities numerically 0 or 1 occurred" indique que 
+le problème est quasi-séparable.
+
+On peut confirmer ce problème en résumant le résumé du modèle
+
+#### 3.1.3 Résumé du modèle
+
+```{r 3.1.3, warning=TRUE,message=FALSE}
+summary(model_glm)
+
+coefs <- coef(model_glm)[-1]
+coef_frame <- data.frame(coef = names(coefs),
+                  value = coefs)
+
+library(ggplot2)
+ggplot(coef_frame, aes(x = coef, y = value)) +
+    geom_pointrange(aes(ymin = 0, ymax = value)) +
+    ggtitle("Coefficients of logistic regression model") +
+    coord_flip()
+```
+
+Les variables safetylow, persons4 , et personsmore ont une magnitude et une erreur standard importante. 
+
+#### 3.1.4 Performance du modèle
+
+```{r 3.1.4, warning=TRUE,message=FALSE}
+cars_test$pred_glm <- predict(model_glm,newdata=cars_test,type = "response")
+
+# sigr permet de calculer la deviance
+library(sigr)
+
+confmat <- function(dframe, predvar) {
+    cmat <- table(truth = ifelse(dframe$fail, "unacceptable", "passed"),
+    prediction = ifelse(dframe[[predvar]] > 0.5, "unacceptable", "passed"))
+    accuracy <- sum(diag(cmat)) / sum(cmat)
+    deviance <- calcDeviance(dframe[[predvar]], dframe$fail)
+    list(confusion_matrix = cmat, accuracy = accuracy, deviance = deviance)
+}
+
+confmat(cars_test, "pred_glm")
+```
+
+### 3.2 Types de régularisation
+
+* Ridge (L2)
+
+* Lasso (L1)
+
+* Elastic Net
+
+### 3.3 Régression régularisée avec glmnet
+
+#### 3.3.1 Régression Ridge
+
+```{r 3.3.1.1, warning=FALSE,message=FALSE}
+library(glmnet)
+library(glmnetUtils)
+
+(model_ridge <- cv.glmnet(fmla,
+                      cars_train,
+                      alpha = 0,
+                      family = "binomial"))
+```
+
+Coefficients du modèle :
+
+```{r 3.3.1.2, warning=FALSE,message=FALSE}
+(coefs <- coef(model_ridge))
+
+coef_frame <- data.frame(coef = rownames(coefs)[-1], value = coefs[-1,1])
+
+ggplot(coef_frame, aes(x = coef, y = value)) +
+        geom_pointrange(aes(ymin = 0, ymax = value)) +
+        ggtitle("Coefficients of ridge model") +
+        coord_flip()
+```
+
+Performance du modèle :
+
+```{r 3.3.1.3, warning=FALSE,message=FALSE}
+prediction <- predict(model_ridge,
+                newdata = cars_test,
+                type = "response")
+
+cars_test$pred_ridge <- as.numeric(prediction)
+
+confmat(cars_test, "pred_ridge")
+```
+
+#### 3.3.2 Régression Lasso
+
+```{r 3.3.2.1, warning=FALSE,message=FALSE}
+library(glmnet)
+library(glmnetUtils)
+
+(model_ridge <- cv.glmnet(fmla,
+                      cars_train,
+                      alpha = 1,
+                      family = "binomial"))
+```
+
+Coefficients du modèle :
+
+```{r 3.3.2.2, warning=FALSE,message=FALSE}
+(coefs <- coef(model_ridge))
+
+coef_frame <- data.frame(coef = rownames(coefs)[-1], value = coefs[-1,1])
+
+ggplot(coef_frame, aes(x = coef, y = value)) +
+        geom_pointrange(aes(ymin = 0, ymax = value)) +
+        ggtitle("Coefficients of ridge model") +
+        coord_flip()
+```
+
+Performance du modèle :
+
+```{r 3.3.2.3, warning=FALSE,message=FALSE}
+prediction <- predict(model_ridge,
+                newdata = cars_test,
+                type = "response")
+
+cars_test$pred_ridge <- as.numeric(prediction)
+
+confmat(cars_test, "pred_ridge")
+```
+
+La précision du modèle lasso sur les données de test est similaire à celle du modèle ridge, mais la déviance est beaucoup plus faible, ce qui indique de meilleures performances.
+
+#### 3.3.3 Régression Elastic Net
+
+Le processus d'extraction du meilleur modèle est un peu complexe. Contrairement à *cv.glmnet*,  *cva. glmnet* ne renvoie ni alpha.min ni alpha.1se. Au lieu de cela, le champ elastic_ net $ alpha renvoie tous les alphas que la fonction a essayés (11 d'entre eux, par défaut), et elastic_net $ modlist renvoie tous les objets de modèle glmnet :: cv.glmnet correspondants
+
+```{r 3.3.3.1, warning=FALSE,message=FALSE}
+(elastic_net <- cva.glmnet(fmla,
+                    cars_train,
+                    family = "binomial"))
+```
+
+Détermination de la valeur alpha optimale (produisant l'erreur minimale) :
+
+```{r 3.3.3.2, warning=FALSE,message=FALSE}
+# returne l'erreur moyenne de la validation croisée
+get_cvm <- function(model) {
+    index <- match(model$lambda.1se, model$lambda)
+    model$cvm[index]
+}
+
+# récupère les valeurs apha testées par l'algorithme
+enet_performance <- data.frame(alpha = elastic_net$alpha)
+
+# récupère la liste des modèles
+models <- elastic_net$modlist
+
+# évalue l'erreur pour chaque modèle
+enet_performance$cvm <- vapply(models, get_cvm, numeric(1))
+
+# détermine l'erreur minimale
+minix <- which.min(enet_performance$cvm)
+
+# retourne la valeur alpha correspondante
+(best_alpha <- elastic_net$alpha[minix])
+
+ggplot(enet_performance, aes(x = alpha, y = cvm)) +
+        geom_point() +
+        geom_line() +
+        geom_vline(xintercept = best_alpha, color = "red", linetype = 2) +
+        ggtitle("CV loss as a function of alpha")
+```
+
+Construction du modèle finale (avec la valeur alpha optimale) et évaluation des performances :
+
+```{r 3.3.3.3, warning=FALSE,message=FALSE}
+(model_enet <- cv.glmnet(fmla,
+                  cars_train,
+                  alpha = best_alpha,
+                  family = "binomial"))
+
+prediction <- predict(model_enet,
+                  newdata = cars_test,
+                  type = "response")
+
+cars_test$pred_enet <- as.numeric(prediction)
+
+confmat(cars_test, "pred_enet")
+```
+
+

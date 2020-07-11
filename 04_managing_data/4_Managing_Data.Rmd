@@ -1,0 +1,245 @@
+---
+title: "Prétraitement des données"
+author: "Daniel Pont"
+date: "28/04/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prétraitement des données
+
+## 1. Chargement des données
+
+```{r 1}
+customer_data = readRDS("data/custdata.RDS")
+summary(customer_data)
+```
+## 2. Transformation des données incorrectes en NA
+
+```{r 2,message=FALSE}
+library(dplyr)
+customer_data <-  customer_data %>% 
+  mutate(age = na_if(age,0),
+         income= ifelse(income<0,NA,income))
+```
+
+## 3. Création de nouvelles variables
+
+```{r 3,message=FALSE}
+customer_data <-  customer_data %>% 
+  # les valeurs 1,2 et 3 de gas_usage
+  # sont des codes spéciaux utilisés
+  # pour créer 3 nouveaux indicateurs
+  mutate(gas_with_rent= (gas_usage==1),
+         gas_with_electricity=(gas_usage==2),
+         no_gas_bill=(gas_usage==3)) %>%
+  mutate(gas_usage=ifelse(gas_usage<4,NA,gas_usage))
+```
+
+## 4. Gestion des valeurs manquantes
+
+### 4.1 Identification des valeurs manquantes et raison de leur absence
+
+```{r 4.1,message=FALSE}
+# fonction comptant les valeurs manquantes par variable
+count_missing = function(df) {
+  sapply(df,FUN = function(col) sum(is.na(col)) )
+}
+
+count_missing(customer_data)
+```
+
+* **Données manquantes pour des variables catégorielles** : remplacer NA
+  par une nouvelle catégorie ("missing", "invalid")
+
+* **Données manquantes pour des variables numériques ou booléennes** : 
+
+  + Si les données manquantes dont distribuées **aléatoirement** : on peut les imputer
+    (par exemple en les remplaçant par la valeur moyenne)
+    
+  + si les données manquantes sont distribuées **systématiquement** : ajouter une variable    indicatrice (ex : income_isBAD)
+
+### 4.2 Utilisation de la bibliothèque vtreat
+
+```{r 4.2,message=FALSE, warning = FALSE}
+library(vtreat)
+# vtreat va créer un plan de traitement des données manquantes
+# les colonnes custid et health_ins ne seront pas prises en compte
+varlist <- setdiff(colnames(customer_data),c("custid","health_ins"))
+
+# plan de traitemnt indiquant les valeurs manquantes et effectuant une imputation simple
+treatment_plan <- design_missingness_treatment(dframe=customer_data,varlist = varlist)
+training_prepared <- prepare(treatmentplan = treatment_plan,df=customer_data)  
+
+# comparaison des colonnes avant et apres traitement
+colnames(customer_data)
+colnames(training_prepared)
+
+# verification qu'il n'y a plus de valeurs manquantes
+sum(count_missing(training_prepared))
+
+# EXAMEN PLUS DETAILLE DU TRAITEMENT
+
+# quelles sont les lignes du dataframe original pour lesquelles 
+# housing_type n'est pas renseigné ?
+
+htmisssing <- which(is.na(customer_data$housing_type))
+columns_to_look_at <- c("custid", "is_employed", "num_vehicles",
+                          "housing_type", "health_ins")
+customer_data[htmisssing,columns_to_look_at] %>% head()
+
+# comment ont-elle été traitée ?
+columns_to_look_at = c("custid", "is_employed", "is_employed_isBAD",
+                        "num_vehicles","num_vehicles_isBAD",
+                        "housing_type", "health_ins")
+training_prepared[htmisssing,columns_to_look_at] %>% head() 
+
+customer_data %>% summarize(mean_is_employed= mean(is_employed,na.rm = TRUE), mean_num_vehicles=mean(num_vehicles,na.rm = TRUE))
+
+```
+
+## 5. Normalisation, centrage, mise à l'échelle
+
+### 5.1 Normalisation
+
+Normalisation à partir de données externes
+
+```{r 5.1.1,message=FALSE, warning = FALSE}
+#median income by state
+median_income_table <- readRDS("data/median_income.RDS")
+head(median_income_table)
+training_prepared <- training_prepared %>% 
+                      left_join(.,median_income_table,by = "state_of_res") %>% 
+                      mutate(income_normalized=income/median_income)
+head(training_prepared[,c("income","median_income", "income_normalized")])
+summary(training_prepared$income_normalized)
+```
+
+Normalisation à partir de la moyenne calculée
+
+```{r 5.1.2,message=FALSE, warning = FALSE}
+summary(training_prepared$age)
+mean_age <- mean(training_prepared$age)
+age_normalized <- training_prepared$age /mean_age
+summary(age_normalized)
+```
+
+### 5.2 Centrage et mise à l'échelle
+
+#### 5.2.1 En calculant la moyenne et l'écart-type 
+
+```{r 5.2.1 ,message=FALSE, warning = FALSE}
+sd_age <- sd(training_prepared$age)
+
+# calcul de l'itervalle d'ages type
+print(mean_age + c(-sd_age,sd_age) )
+
+# age centré et mis à l'échelle
+training_prepared$scaled_age <- (training_prepared$age - mean_age)/sd_age
+
+# ages situé dans un intervalle d'un déviation standard autour de la moyenne
+training_prepared %>% filter(abs(age-mean_age)<sd_age) %>%
+                      select(age,scaled_age) %>%
+                      head()
+
+# ages significativement plus jeunes ou plus vieux que la moyenne
+training_prepared %>% filter(abs(age-mean_age)>sd_age) %>%
+                      select(age,scaled_age) %>%
+                      head()
+```
+
+#### 5.2.2 Avec la fonction scale() 
+```{r 5.2.2 ,message=FALSE, warning = FALSE}
+dataf <- training_prepared[,c("age","income","num_vehicles","gas_usage")]
+
+dataf_scaled <-scale(dataf,center = TRUE,scale = TRUE)
+
+summary(dataf_scaled)
+
+# récupération des moyennes
+means <- attr(dataf_scaled,"scaled:center")
+
+# récupération des écarts-types
+sds <- attr(dataf_scaled,"scaled:scale")
+```
+
+### 5.3 Application des transformations à de nouvelles données
+
+> Il est primoridal de conserver toutes les transformations appliquées
+lors du traitement des valeurs manquantes et  de la normalisation 
+du jeu de données initial. En effet on doit pouvoir les ré-appliquer 
+systématiquement à de nouvelles données.
+
+```{r 5.3 ,message=FALSE, warning = FALSE}
+# on simule de donnéees
+new_data <- customer_data
+
+# traitement des valeurs manquantes
+new_data_treated <- prepare(treatmentplan = treatment_plan,df = new_data)
+
+# centrage et mise à l'échelle
+new_dataf <- new_data_treated[,c("age","income","num_vehicles","gas_usage")]
+new_dataf_scaled <- scale(new_dataf,scale=sds,center=means)
+```
+
+### 5.4 Transformation logarithmique des distributions asymétriques et à larges plages de valeurs
+
+#### 5.4.1 Transormation logarithmique  simple
+```{r 5.4.1 ,message=FALSE, warning = FALSE}
+library(ggplot2)
+ggplot(data = customer_data,aes(x=income)) +
+  geom_density()
+
+ggplot(data = customer_data,aes(x=log(income))) +
+  geom_density()
+
+```
+
+#### 5.4.2 Transformation logarithmique signée
+
+La fonction suivante (signedlog10) ignore les valeurs
+situées dans l'intervalle -1,1 masi pren en compte les valeusr négatives (< à -1)
+contrairement au logarithme simple
+
+```{r 5.4.2 ,message=FALSE, warning = FALSE}
+signedlog10 <- function(x) {
+  ifelse(abs(x) <= 1, 0, sign(x)*log10(abs(x)))
+}
+
+ggplot(data = customer_data,aes(x=signedlog10(income))) +
+  geom_density()
+```
+
+## 6. Création des jeux de données d'apprentissage et de test
+
+### 6.1 Division simple
+
+Une solution simple consiste à ajouter une colonne  pour désigner le groupe de données
+
+```{r 6.1 ,message=FALSE, warning = FALSE}
+# important pour que la division des groupes soit reproductible
+set.seed(25643)
+customer_data$gp<- runif(nrow(customer_data))
+# 10% de données de test / 90% de données d'apprentissage
+customer_test <- subset(customer_data,gp<=0.1)
+customer_train <- subset(customer_data,gp>0.1)
+dim(customer_test)
+dim(customer_train)
+```
+
+### 6.2 Division prenant en compte des regroupements d'enregistrements
+
+```{r 6.2 ,message=FALSE, warning = FALSE}
+household_data <- readRDS("data/hhdata.RDS")
+hh <- unique(household_data$household_id)
+set.seed(25643)
+households <- data.frame(household_id=hh,gp=runif(length(hh)),stringsAsFactors = FALSE)
+household_data <- left_join(household_data,household_data,by="household_id")
+```

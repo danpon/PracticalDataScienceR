@@ -1,0 +1,794 @@
+---
+title: "Méthodes d'apprentissage avancées"
+author: "Daniel Pont"
+date: "08/07/2020"
+output:
+  html_document:
+    theme: united
+    toc: yes
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Méthodes d'apprentissage avancées
+
+## 1. Méthodes basées sur les arbres de décision
+
+### 1.1 Arbre de décision basique
+
+
+```{r 1.1, warning=FALSE,message=FALSE}
+spamD <- read.table('data/spamD.tsv', header = TRUE, sep = '\t')
+spamD$isSpam <- spamD$spam == 'spam'
+spamTrain <- subset(spamD, spamD$rgroup >= 10)
+spamTest <- subset(spamD, spamD$rgroup < 10)
+
+spamVars <- setdiff(colnames(spamD), list('rgroup', 'spam', 'isSpam'))
+
+library(wrapr)
+
+spamFormula <- mk_formula("isSpam", spamVars)
+
+loglikelihood <- function(y, py) {
+    pysmooth <- ifelse(py == 0, 1e-12,
+    ifelse(py == 1, 1 - 1e-12, py))
+      sum(y * log(pysmooth) + (1 - y) * log(1 - pysmooth))
+}
+
+accuracyMeasures <- function(pred, truth, name = "model") {
+    dev.norm <- -2 * loglikelihood(as.numeric(truth), pred) / length(pred)
+    ctable <- table(truth = truth,
+    pred = (pred > 0.5))
+    accuracy <- sum(diag(ctable)) / sum(ctable)
+    precision <- ctable[2, 2] / sum(ctable[, 2])
+    recall <- ctable[2, 2] / sum(ctable[2, ])
+    f1 <- 2 * precision * recall / (precision + recall)
+    data.frame(model = name, accuracy = accuracy, f1 = f1, dev.norm)
+}
+
+library(rpart)
+
+treemodel <- rpart(spamFormula, spamTrain, method = "class")
+
+library(rpart.plot)
+
+rpart.plot(treemodel, type = 5, extra = 6)
+
+predTrain <- predict(treemodel, newdata = spamTrain)[, 2]
+trainperf_tree <- accuracyMeasures(predTrain,
+                  spamTrain$spam == "spam",
+                  name = "tree, training")
+
+predTest <- predict(treemodel, newdata = spamTest)[, 2]
+testperf_tree <- accuracyMeasures(predTest,
+                    spamTest$spam == "spam",
+                    name = "tree, test")
+
+library(pander)
+panderOptions("plain.ascii", TRUE)
+panderOptions("keep.trailing.zeros", TRUE)
+panderOptions("table.style", "simple")
+perf_justify <- "lrrr"
+perftable <- rbind(trainperf_tree, testperf_tree)
+pandoc.table(perftable, justify = perf_justify)
+```
+
+### 1.2 Bagging
+
+Le bagging d'arbres de décision améliore la stabilité des modèles finaux
+en dilinuant la variance. Cela améliorela précision des prédictions.
+Le risque de surapprentissage avec le bagging est aussi moins élevé.
+
+
+```{r 1.2, warning=FALSE,message=FALSE,cache=TRUE}
+ntrain <- dim(spamTrain)[1]
+n <- ntrain
+ntree <- 100
+
+samples <- sapply(1:ntree,
+                  FUN = function(iter)
+                  { sample(1:ntrain, size = n, replace = TRUE) })
+
+treelist <-lapply(1:ntree,
+              FUN = function(iter) {
+                  samp <- samples[, iter];
+                  rpart(spamFormula, spamTrain[samp, ], method = "class") }
+            )
+
+predict.bag <- function(treelist, newdata) {
+                preds <- sapply(1:length(treelist),
+                              FUN = function(iter) {
+                                predict(treelist[[iter]], newdata = newdata)[, 2] })
+                                predsums <- rowSums(preds)
+                                predsums / length(treelist)
+}
+
+
+pred <- predict.bag(treelist, newdata = spamTrain)
+
+trainperf_bag <- accuracyMeasures(pred,
+                    spamTrain$spam == "spam",
+                    name = "bagging, training")
+
+pred <- predict.bag(treelist, newdata = spamTest)
+
+testperf_bag <- accuracyMeasures(pred,
+                    spamTest$spam == "spam",
+                    name = "bagging, test")
+
+perftable <- rbind(trainperf_bag, testperf_bag)
+pandoc.table(perftable, justify = perf_justify)
+```
+
+### 1.3 Forêts aléatoires
+
+La différence entre le bagging et les forêts aléatoires réside dans le fait
+que le bagging utilise l'ensemble des variables pour chaque arbre et pour
+chaque noeud. 
+
+Lors de la construction d'un noeud d'arbre dans une forêt aléatoire
+seule une fraction des variables (mtry) est utilisée. Cette approche permet dé décorréler
+les différents arbres. Ainsi si une partie des vraiables explicatives pose problème (en
+faussant les prédictions) ces variables ne se trouvent pas systématiquement dans tous les arbres.
+
+
+```{r 1.3, warning=FALSE,message=FALSE,cache=TRUE}
+library(randomForest)
+set.seed(5123512)
+
+fmodel <- randomForest( x = spamTrain[, spamVars],
+                        y = spamTrain$spam,
+                        ntree = 100,
+                        nodesize = 7,
+                        importance = TRUE)
+
+pred <- predict(fmodel,
+                spamTrain[, spamVars],
+                type = 'prob')[, 'spam']
+
+trainperf_rf <- accuracyMeasures(predict(fmodel,
+                                  newdata = spamTrain[, spamVars], type = 'prob')[, 'spam'],
+                                  spamTrain$spam == "spam", name = "random forest, train")
+
+testperf_rf <- accuracyMeasures(predict(fmodel,
+                                  newdata
+                                  = spamTest[, spamVars], type = 'prob')[, 'spam'],
+                                  spamTest$spam == "spam", name = "random forest, test")
+
+perftable <- rbind(trainperf_rf, testperf_rf)
+
+pandoc.table(perftable, justify = perf_justify)
+
+trainf <- rbind(trainperf_tree, trainperf_bag, trainperf_rf)
+                  pandoc.table(trainf, justify = perf_justify)
+
+testf <- rbind(testperf_tree, testperf_bag, testperf_rf)
+                pandoc.table(testf, justify = perf_justify)
+              
+difff <- data.frame(model = c("tree", "bagging", "random forest"),
+                  accuracy = trainf$accuracy - testf$accuracy,
+                  f1 = trainf$f1 - testf$f1,
+                  dev.norm = trainf$dev.norm - testf$dev.norm)
+
+pandoc.table(difff, justify=perf_justify)
+
+# importance des variables de la forêt aléatoire
+varImp <- importance(fmodel)
+varImp[1:10, ]
+varImpPlot(fmodel, type = 1)
+
+
+# Jeremy Howard (de Kaggle et de fast.ai fame) est un grand partisan du tri initial
+# des variables par ordre d'importance pour ne garder que les plus pertinentes.
+sorted <- sort(varImp[, "MeanDecreaseAccuracy"],
+              decreasing = TRUE)
+selVars <- names(sorted)[1:30]
+
+fsel <- randomForest( x = spamTrain[, selVars],
+                      y = spamTrain$spam,
+                      ntree = 100,
+                      nodesize = 7,
+                      importance = TRUE)
+
+trainperf_rf2 <- accuracyMeasures(predict(fsel,
+                    newdata = spamTrain[, selVars], type = 'prob')[, 'spam'],
+                    spamTrain$spam == "spam", name = "RF small, train")
+
+testperf_rf2 <- accuracyMeasures(predict(fsel,
+                    newdata=spamTest[, selVars], type = 'prob')[, 'spam'],
+                    spamTest$spam == "spam", name = "RF small, test")
+
+perftable <- rbind(testperf_rf, testperf_rf2)
+pandoc.table(perftable, justify = perf_justify)
+
+```
+
+> Attention : contrairement à une croyance répandue, il existe un risque de surapprentissage avec
+les forêts aléatoires : il n'est pas rare d'observer des prédictions extrêmement performantes sur les données d'aapprentisagge et nettement moins bonnes sur les données de test.
+
+### 1.4 Gradient boosted trees
+
+#### 1.4.1 Principe
+
+Le principe de construction des gradient boosted trees est le suivant :
+
+1. Utiliser l'ensemble d'arbres courant (TE) pour prédire la variable réponse sur les données d'apprentissage.
+
+2. Mesurer l'erreur résiduelle entre les vraies valeurs et les valeurs pérdites
+
+3. Ajuster un nouvel arbre T_i sur les résidus. Ajouter T_i à TE
+
+4. Continuer jusqu'à la disparition des résidus ou à un autre critère d'arrêt.
+
+#### 1.4.2 Exemple (dataset iris)
+
+```{r 1.4.2.1, warning=FALSE,message=FALSE,cache=TRUE}
+# Chargement des données
+iris <- iris
+iris$class <- as.numeric(iris$Species == "setosa")
+set.seed(2345)
+intrain <- runif(nrow(iris)) < 0.75
+train <- iris[intrain, ]
+test <- iris[!intrain, ]
+head(train)
+input <- as.matrix(train[, 1:4])
+```
+
+```{r 1.4.2.2, warning=FALSE,message=FALSE,cache=TRUE}
+# Validation croisée pour déterminer la taille du modèle (nbre d'arbres) optimale
+library(xgboost)
+
+cv <- xgb.cv(input,
+  label = train$class,
+  params = list(
+    objective = "binary:logistic"
+  ),
+  nfold = 5,
+  nrounds = 100,
+  print_every_n = 10,
+  metrics = "logloss")
+
+evalframe <- as.data.frame(cv$evaluation_log)
+head(evalframe)
+
+(NROUNDS <- which.min(evalframe$test_logloss_mean))
+
+library(ggplot2)
+
+ggplot(evalframe, aes(x = iter, y = test_logloss_mean)) +
+        geom_line() +
+        geom_vline(xintercept = NROUNDS, color = "darkred", linetype = 2) +
+        ggtitle("Cross-validated log loss as a function of ensemble size")
+```
+
+```{r 1.4.2.3, warning=FALSE,message=FALSE,cache=TRUE}
+# Apprentissage du modèle
+model <- xgboost(data = input,
+                  label = train$class,
+                  params = list(
+                      objective = "binary:logistic"
+                  ),
+                  nrounds = NROUNDS,
+                  verbose = FALSE)
+
+test_input <- as.matrix(test[, 1:4])
+pred <- predict(model, test_input)
+
+accuracyMeasures(pred, test$class)
+```
+
+#### 1.4.3 Classification de texte avec gadient-boosted trees
+
+```{r 1.4.3.1, warning=FALSE,message=FALSE,cache=TRUE}
+# Chargement des données
+library(zeallot)
+c(texts, labels) %<-% readRDS("data/IMDBtrain.RDS")
+
+
+# Méthodes utilitaires
+
+library(wrapr)
+library(xgboost)
+# if this fails, make sure text2vec is installed:
+# install.packages("text2vec")
+library(text2vec)
+
+
+#
+# function that takes a training corpus (texts)
+# and returns a vocabulary: 10,000 words that
+# appear in at least 10% of the documents, but
+# fewer than half.
+#
+create_pruned_vocabulary <- function(texts) {
+  # create an iterator over the training set
+  it_train <- itoken(texts,
+                    preprocessor = tolower,
+                    tokenizer = word_tokenizer,
+                    ids = names(texts),
+                    progressbar = FALSE)
+
+  # tiny stop word list
+  stop_words <- qc(the, a, an, this, that, those, i, you)
+  vocab <- create_vocabulary(it_train, stopwords = stop_words)
+
+  # prune the vocabulary
+  # prune anything too common (appears in over half the documents)
+  # prune anything too rare (appears in less than 0.1% of the documents)
+  # limit to 10,000 words after that
+  pruned_vocab <- prune_vocabulary(
+    vocab,
+    doc_proportion_max = 0.5,
+    doc_proportion_min = 0.001,
+    vocab_term_max = 10000
+  )
+
+  pruned_vocab
+}
+
+
+# take a corpus and a vocabulary
+# and return a sparse matrix (of the kind xgboost will take)
+# rows are documents, columns are vocab words
+# this representation loses the order or the words in the documents
+make_matrix <- function(texts, vocab) {
+  iter <- itoken(texts,
+                preprocessor = tolower,
+                tokenizer = word_tokenizer,
+                ids = names(texts),
+                progressbar = FALSE)
+  create_dtm(iter, vocab_vectorizer(vocab))
+}
+
+#
+# Input:
+# - dtm_train: document term matrix of class dgCmatrix
+# - labelvvec: numeric vector of class labels (1 is positive class)
+#
+# Returns:
+# - xgboost model
+#
+fit_imdb_model <- function(dtm_train, labels) {
+  # run this estimate the number of rounds
+  # needed for xgboost
+  # cv <- xgb.cv(dtm_train, label = labels,
+  #             params=list(
+  #               objective="binary:logistic"
+  #               ),
+  #             nfold=5,
+  #             nrounds=500,
+  #             print_every_n=10,
+  #             metrics="logloss")
+  #
+  # evalframe <- as.data.frame(cv$evaluation_log)
+  # NROUNDS <- which.min(evalframe$test_logloss_mean)
+
+  # we've run it already, so here's a good answer
+  NROUNDS <- 371
+
+
+  model <- xgboost(data=dtm_train, label=labels,
+                  params=list(
+                    objective="binary:logistic"
+                  ),
+                  nrounds=NROUNDS,
+                  verbose=FALSE)
+
+  model
+}
+
+```
+
+
+```{r 1.4.3.2, warning=FALSE,message=FALSE,cache=TRUE}
+# création du vocabulaire et de la matrice termes-documents
+vocab <- create_pruned_vocabulary(texts)
+dtm_train <- make_matrix(texts, vocab)
+
+# détermination du nombre d'arbres
+cv <- xgb.cv(dtm_train,
+              label = labels,
+              params = list(
+                  objective = "binary:logistic"
+              ),
+              nfold = 5,
+              nrounds = 500,
+              early_stopping_rounds = 20,
+              print_every_n = 10,
+              metrics = "logloss")
+
+evalframe <- as.data.frame(cv$evaluation_log)
+(NROUNDS <- which.min(evalframe$test_logloss_mean))
+
+# création du modèle
+model <- xgboost(data = dtm_train, label = labels,
+                  params = list(
+                  objective = "binary:logistic"
+                ),
+                nrounds = NROUNDS,
+                verbose = FALSE)
+
+pred = predict(model, dtm_train)
+trainperf_xgb = accuracyMeasures(pred, labels, "training")
+
+# Evaluation du modèle
+c(test_texts, test_labels) %<-% readRDS("data/IMDBtest.RDS")
+dtm_test = make_matrix(test_texts, vocab)
+pred = predict(model, dtm_test)
+testperf_xgb = accuracyMeasures(pred, test_labels, "test")
+perftable <- rbind(trainperf_xgb, testperf_xgb)
+pandoc.table(perftable, justify = perf_justify)
+```
+
+#### 1.4.4 Utilisation de xgboost avec des variables catégorielles 
+
+
+Chargement des données :
+
+```{r 1.4.4.1, warning=FALSE,message=FALSE,cache=TRUE}
+load("data/NatalBirthData.rData")
+train <- sdata[sdata$ORIGRANDGROUP <= 5, ]
+test <- sdata[sdata$ORIGRANDGROUP >5 , ]
+input_vars <- setdiff(colnames(train), c("DBWT", "ORIGRANDGROUP"))
+str(train[, input_vars])
+```
+
+
+Pré-traitement avec vtreat :
+
+```{r 1.4.4.2, warning=FALSE,message=FALSE,cache=TRUE}
+library(vtreat)
+
+# Creates clean numeric variables, (“clean”), 
+#         missingness indicators, (“isBad”), 
+#         indicator variables (“lev”),
+#         but not catP (prevalence) variables
+treatplan <- designTreatmentsZ(train,
+                                input_vars,
+                                codeRestriction = c("clean", "isBAD", "lev" ),
+                                verbose = FALSE)
+
+train_treated <- prepare(treatplan, train)
+str(train_treated)
+```
+
+Création et application du modèle :
+
+```{r 1.4.4.3, warning=FALSE,message=FALSE,cache=TRUE}
+birthwt_model <- xgboost(as.matrix(train_treated),
+                            train$DBWT,
+                            params = list(
+                                objective = "reg:linear",
+                                base_score = mean(train$DBWT)
+                            ),
+                            nrounds = 50,
+                            verbose = FALSE)
+
+test_treated <- prepare(treatplan, test)
+pred <- predict(birthwt_model, as.matrix(test_treated))
+```
+
+## 2. GAM  (Generalized Additive Model  - modèle additif généralisé) 
+
+### 2.1 Principe
+
+Un modèle linéaire est de la forme suivante :
+
+f(x[i, ]) = b0 + b[1] * x[i, 1] + b[2] * x[i, 2] + ... b[n] * x[i, n]
+
+Dans sa forme la plus simple, un modèle GAM assouplit la contrainte de linéarité et trouve un ensemble de fonctions s_i () (et un terme constant a0) tels que :
+
+f(x[i,]) = a0 + s_1(x[i, 1]) + s_2(x[i, 2]) + ... s_n(x[i, n])
+
+Nous voulons également que f (x [i,]) soit aussi proche de y [i] que possible. Les fonctions s_i () sont des ajustements de courbes lisses construits à partir de polynômes. Les courbes sont appelées splines et sont conçues pour passer le plus près possible des données sans surajustement.
+
+### 2.2 Exemple de régression à une dimension
+
+#### 2.2.1 Création d'un jeu de données artificielles
+
+```{r 2.2.1, warning=FALSE,message=FALSE}
+set.seed(602957)
+x <- rnorm(1000)
+noise <- rnorm(1000, sd = 1.5)
+y <- 3 * sin(2 * x) + cos(0.75 * x) - 1.5 * (x^2) + noise
+select <- runif(1000)
+frame <- data.frame(y = y, x = x)
+train <- frame[select > 0.1, ]
+test <- frame[select <= 0.1, ]
+```
+
+#### 2.2.2 Régression linéaire sur les données artificielles
+
+```{r 2.2.2, warning=FALSE,message=FALSE}
+lin_model <- lm(y ~ x, data = train)
+summary(lin_model)
+
+rmse <- function(residuals) {
+  sqrt(mean(residuals^2))
+}
+
+train$pred_lin <- predict(lin_model, train)
+resid_lin <- with(train, y - pred_lin)
+rmse(resid_lin)
+
+library(ggplot2)
+ggplot(train, aes(x = pred_lin, y = y)) +
+              geom_point(alpha = 0.3) +
+              geom_abline()
+```
+
+#### 2.2.3 Application de GAM sur les données artificielles
+
+```{r 2.2.3, warning=FALSE,message=FALSE}
+library(mgcv)
+
+gam_model <- gam(y ~ s(x), data = train)
+gam_model$converged
+summary(gam_model)
+train$pred <- predict(gam_model, train)
+resid_gam <- with(train, y - pred)
+rmse(resid_gam)
+
+ggplot(train, aes(x = pred, y = y)) +
+geom_point(alpha = 0.3) +
+geom_abline()
+```
+
+#### 2.2.4 Comparaison des performances entre GAM et la régression linéaire
+
+```{r 2.2.4, warning=FALSE,message=FALSE}
+test <- transform(test,
+pred_lin = predict(lin_model, test),
+pred_gam = predict(gam_model, test) )
+test <- transform(test,
+resid_lin = y - pred_lin,
+resid_gam = y - pred_gam)
+
+rmse(test$resid_lin)
+rmse(test$resid_gam)
+
+library(sigr)
+wrapFTest(test, "pred_lin", "y")$R2
+wrapFTest(test, "pred_gam", "y")$R2
+```
+
+#### 2.2.5 Extraction de la fonction de spline du modèle GAM
+
+```{r 2.2.5, warning=FALSE,message=FALSE}
+sx <- predict(gam_model, type = "terms")
+summary(sx)
+
+xframe <- cbind(train, sx = sx[,1])
+
+ggplot(xframe, aes(x = x)) +
+  geom_point(aes(y = y), alpha = 0.4) +
+  geom_line(aes(y = sx))
+```
+
+#### 2.2.6 Utilisation de GAM sur des données réelles
+
+Pour référence, application d'une régression linéaire :
+
+```{r 2.2.6.1, warning=FALSE,message=FALSE}
+library(mgcv)
+library(ggplot2)
+load("data/NatalBirthData.rData")
+train <- sdata[sdata$ORIGRANDGROUP <= 5, ]
+test <- sdata[sdata$ORIGRANDGROUP > 5, ]
+form_lin <- as.formula("DBWT ~ PWGT + WTGAIN + MAGER + UPREVIS")
+linmodel <- lm(form_lin, data = train)
+summary(linmodel)
+```
+
+Création d'un modèle GAM :
+
+```{r 2.2.6.2, warning=FALSE,message=FALSE}
+form_gam <- as.formula("DBWT ~ s(PWGT) + s(WTGAIN) +
+s(MAGER) + s(UPREVIS)")
+gammodel <- gam(form_gam, data = train)
+gammodel$converged
+## [1] TRUE
+summary(gammodel)
+```
+
+Le GAM a amélioré l'ajustement, et les quatre variables semblent avoir une relation non linéaire avec le poids de naissance, comme en témoignent les edfs (estimated degrees of freedom) tous supérieurs à 1. 
+Nous pourrions utiliser plot (gammodel) pour examiner la forme des fonctions s (); comparons-les plutôt avec une courbe de lissage directe de chaque variable par rapport au poids de la mère.
+
+```{r 2.2.6.3, warning=FALSE,message=FALSE,cache=TRUE}
+# Gets the matrix of s() functions
+terms <- predict(gammodel, type = "terms")
+# Binds in the birth weight (DBWT)
+terms <- cbind(DBWT = train$DBWT, terms)
+# Shifts all the columns to be zero mean (to make comparisons easy); converts to a data frame
+tframe <- as.data.frame(scale(terms, scale = FALSE))
+# Makes the column names referencefriendly (s(PWGT) is converted to sPWGT, etc.)
+colnames(tframe) <- gsub('[()]', '', colnames(tframe))
+# Binds in the input variables
+vars = c("PWGT", "WTGAIN", "MAGER", "UPREVIS")
+
+pframe <- cbind(tframe, train[, vars])
+
+# Compares the spline s(PWGT) to the smoothed curve of DBWT (baby’s weight) 
+# as a function of mother’s weight (PWGT)
+ggplot(pframe, aes(PWGT)) +
+  geom_point(aes(y = sPWGT)) +
+  geom_smooth(aes(y = DBWT), se = FALSE)
+
+ggplot(pframe, aes(MAGER)) +
+  geom_point(aes(y = sMAGER)) +
+  geom_smooth(aes(y = DBWT), se = FALSE)
+
+ggplot(pframe, aes(UPREVIS)) +
+  geom_point(aes(y = sUPREVIS)) +
+  geom_smooth(aes(y = DBWT), se = FALSE)
+
+ggplot(pframe, aes(WTGAIN)) +
+  geom_point(aes(y = sWTGAIN)) +
+  geom_smooth(aes(y = DBWT), se = FALSE)
+```
+
+#### 2.2.7 Régression logistique avec GAM
+
+Pour référence, considérons une régression logistique avec GLM :
+
+```{r 2.2.7.1, warning=FALSE,message=FALSE}
+form <- as.formula("DBWT < 2000 ~ PWGT + WTGAIN + MAGER + UPREVIS")
+logmod <- glm(form, data = train, family = binomial(link = "logit"))
+```
+
+Avec GAM, la régression logistique devient :
+
+```{r 2.2.7.2, warning=FALSE,message=FALSE}
+form2 <- as.formula("DBWT < 2000 ~ s(PWGT) + s(WTGAIN) + s(MAGER) + s(UPREVIS)")
+glogmod <- gam(form2, data = train, family = binomial(link = "logit"))
+
+glogmod$converged
+
+summary(glogmod)
+```
+
+### 2.3 Résoudre des problèmes non linéairement séparables avec SVM
+
+#### 2.3.1 Exemples d'utilisation de SVM (données "spirale")
+
+Repréesentation graphique des données :
+
+```{r 2.3.1.1, warning=FALSE,message=FALSE}
+library(kernlab)
+data(spirals)
+sc <- specc(spirals, centers = 2)
+s <- data.frame(x = spirals[, 1], y = spirals[, 2],
+class = as.factor(sc))
+
+library('ggplot2')
+ggplot(data = s) +
+geom_text(aes(x = x, y = y,
+label = class, color = class)) +
+scale_color_manual(values = c("#d95f02", "#1b9e77")) +
+coord_fixed() +
+theme_bw() +
+theme(legend.position = 'none') +
+ggtitle("example task: separate the 1s from the 2s")
+```
+
+**Utilisation de SVM avec un noyau simpliste (linéaire), mal adapté :**
+
+```{r 2.3.1.2, warning=FALSE,message=FALSE}
+set.seed(2335246L)
+s$group <- sample.int(100, size = dim(s)[[1]], replace = TRUE)
+sTrain <- subset(s, group > 10)
+sTest <- subset(s,group <= 10)
+
+library('e1071')
+mSVMV <- svm(class ~ x + y, data = sTrain, kernel = 'linear', type =
+'nu-classification')
+sTest$predSVMV <- predict(mSVMV, newdata = sTest, type = 'response')
+shading <- expand.grid(
+x = seq(-1.5, 1.5, by = 0.01),
+y = seq(-1.5, 1.5, by = 0.01))
+shading$predSVMV <- predict(mSVMV, newdata = shading, type = 'response')
+
+ggplot(mapping = aes(x = x, y = y)) +
+    geom_tile(data = shading, aes(fill = predSVMV),
+    show.legend = FALSE, alpha = 0.5) +
+    scale_color_manual(values = c("#d95f02", "#1b9e77")) +
+    scale_fill_manual(values = c("white", "#1b9e77")) +
+    geom_text(data = sTest, aes(label = predSVMV), size = 12) +
+    geom_text(data = s, aes(label = class, color = class),
+    alpha = 0.7) +
+    coord_fixed() +
+    theme_bw() +
+    theme(legend.position = 'none') +
+    ggtitle("linear kernel")
+```
+
+**SVM avec un noyau adpaté (Radial/Gaussian) :**
+
+```{r 2.3.1.3, warning=FALSE,message=FALSE}
+mSVMG <- svm(class ~ x + y, data = sTrain, kernel = 'radial', type = 'nu-classification')
+
+sTest$predSVMG <- predict(mSVMG, newdata = sTest, type = 'response')
+
+shading <- expand.grid(
+              x = seq(-1.5, 1.5, by = 0.01),
+              y = seq(-1.5, 1.5, by = 0.01))
+              shading$predSVMG <- predict(mSVMG, newdata = shading, type = 'response')
+              ggplot(mapping = aes(x = x, y = y)) +
+              geom_tile(data = shading, aes(fill = predSVMG),
+              show.legend = FALSE, alpha = 0.5) +
+              scale_color_manual(values = c("#d95f02", "#1b9e77")) +
+              scale_fill_manual(values = c("white", "#1b9e77")) +
+              geom_text(data = sTest, aes(label = predSVMG),
+              size = 12) +
+              geom_text(data = s,aes(label = class, color = class), alpha = 0.7) +
+              coord_fixed() +
+              theme_bw() +
+              theme(legend.position = 'none') +
+              ggtitle("radial/Gaussian kernel")   
+```
+
+
+#### 2.3.2 Comprendre SVM
+
+Un SVM trouve une fonction de décision linéaire (déterminée par les paramètres w et b), où pour un exemple donné x la machine décide que : 
+
+* si w% *% phi (x) + b> = 0 x est dans la classe
+* sinon x n'est pas dans la classe sinon
+
+Le modèle est entièrement déterminé par la fonction phi (), le vecteur w et le décalage scalaire b. 
+
+L'idée est que phi () déplace les données dans un espace où les classes sont séparables linéairement.
+
+SVM trouve alors une frontière linéaire (représentée par w et b) séparant les deux classes de données dans ce nouvel espace . 
+
+Le modèle w, b est idéalement choisi de sorte que
+
+* w %*% phi (x) + b> = u  pour tous les x  dans la classe d'intérêt,
+* w%*% phi (x) + b <= v  pour les autres x
+
+Les données sont appelées séparables si u> v. 
+La taille de la séparation est (u - v) / sqrt (w% *% w) et est appelée la marge. 
+L'objectif de SVM est de maximiser la marge.
+
+
+Cette limite linéaire dans l'espace d'arrivée peut être incurvée dans l'espace d'origine.
+
+
+#### 2.3.3 Comprendre l'astuce du noyau
+
+Soit u et v deux variables.  
+Une fonction k (,)est appelée fonction de noyau si et seulement s'il existe une fonction phi ()
+tel que k (u, v ) = phi (u)%*% phi (v) pour tous les u, v.
+k (u, v) = phi (u)% *% phi (v) est l'expansion Mercer du noyau. 
+(en référence au théorème de Mercer; voir <http://mng.bz/xFD2)> )
+
+```{r 2.3.3, warning=FALSE,message=FALSE}
+# Exemple (artificiel) de noyau
+
+u <- c(1, 2)
+v <- c(3, 4)
+
+k <- function(u, v) {
+  u[1] * v[1] +
+  u[2] * v[2] +
+  u[1] * u[1] * v[1] * v[1] +
+  u[2] * u[2] * v[2] * v[2] +
+  u[1] * u[2] * v[1] * v[2]
+}
+
+phi <- function(x) {
+  x <- as.numeric(x)
+  c(x, x*x, combn(x, 2, FUN = prod))
+}
+
+print(k(u, v))
+print(phi(u))
+print(phi(v))
+print(as.numeric(phi(u) %*% phi(v)))
+```

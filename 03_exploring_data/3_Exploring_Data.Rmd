@@ -1,0 +1,248 @@
+---
+title: "Analyse exploratoire"
+author: "Daniel Pont"
+date: "28/04/2020"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Analyse exploratoire
+
+## 1. Chargement et résumé
+
+```{r summary}
+customer_data = readRDS("data/custdata.RDS")
+summary(customer_data)
+```
+## 2. Analyse univariée
+
+```{r}
+library(ggplot2)
+```
+
+### 2.1 Données quantitatives
+
+
+#### 2.1.1 Histogramme (de base)
+```{r 2.1.1}
+hist(customer_data$age)    
+```
+
+#### 2.1.2 Histogramme (ggplot2)
+```{r 2.1.2}
+ggplot(data=customer_data,aes(x=age))+
+    geom_histogram(binwidth=5, fill="gray")
+```
+
+#### 2.1.3 Boîte à moustache (de base)
+```{r 2.1.3}
+boxplot(customer_data$age)    
+```
+
+#### 2.1.4 Représentation de la densité de probabilité (ggplot2)
+```{r 2.1.4}
+
+ggplot(data=customer_data,aes(x=age))+
+    geom_density()
+```
+
+#### 2.1.5 Utilisation d'une échelle logarithmique (ggplot2)
+
+Echelle classique :
+
+```{r 2.1.5.1}
+library(scales)
+
+ggplot(customer_data, aes(x=income)) + 
+    geom_density() +
+    scale_x_continuous(labels=dollar)
+```
+
+Echelle logarithmique :
+
+```{r 2.1.5.2}
+ggplot(data=subset(customer_data,income>0) ,aes(x=income)) +
+    geom_density() +
+    scale_x_log10(breaks=c(10,100,1000,10000,100000), labels=dollar)+       
+    annotation_logticks(sides="bt",color = "gray")
+```
+
+
+### 2.2 Données qualitatives
+
+#### 2.2.1 Diagramme en barres vertical (de base)
+```{r 2.2.1}
+barplot(table(customer_data$marital_status))
+```
+
+#### 2.2.2 Diagramme en barres vertical (ggplot2)
+```{r 2.2.2}
+ggplot(customer_data, aes(x=marital_status)) + geom_bar(fill="gray")    
+```
+
+#### 2.2.3 Diagramme en barres horizontal (ggplot2)
+```{r 2.2.3}
+ggplot(customer_data, aes(x=state_of_res)) +
+    geom_bar(fill="gray") +
+    coord_flip()    
+```
+
+#### 2.2.4 Diagramme en barres horizontal trié par fréquences (ggplot2)
+```{r 2.2.4}
+freq_res_state= as.data.frame(table(customer_data$state_of_res))
+colnames(freq_res_state) <- c("state_of_res", "count")
+# reordonne les states_of_res par fréquences croissantes
+freq_res_state$state_of_res <- factor(freq_res_state$state_of_res, levels = freq_res_state$state_of_res[order(freq_res_state$count)])
+
+ggplot(data=freq_res_state,aes(x=state_of_res,y=count))+
+    geom_bar(stat = "identity",fill="gray")+
+    coord_flip()    
+```
+
+#### 2.2.5 Dot plot (WVPlots)
+```{r 2.2.5}
+library(WVPlots)
+ClevelandDotPlot(customer_data, "state_of_res",
+sort = 1, title="Customers by state") +
+coord_flip()
+```
+
+## 3. Analyse bivariée
+
+### 3.1 Lien entre variables quantitatives
+
+#### 3.1.1 Estimation de la corrélation
+
+On étudie la corrélation entre l'âge et le niveau de revenu.
+On commence par enlever les valeurs aberrantes /extrêmes
+```{r 3.1.1}
+customer_data2 <- subset(customer_data,
+0 < age & age < 100 &
+0 < income & income < 200000)
+cor(customer_data2$age, customer_data2$income)
+```
+La corrélation est faible
+
+
+#### 3.1.2 Nuage de points (de base)
+```{r 3.1.2}
+# on rend l'échantillonnage reproductible
+# en spécifiant le random seed
+set.seed(245566)
+
+# pour des raions de lisibilité on ne représente que 10% des données
+customer_data_samp <-
+    dplyr::sample_frac(customer_data2, size=0.1, replace=FALSE)
+
+x <- customer_data_samp$age
+y <- customer_data_samp$income
+
+lo <- loess(y~x)
+
+smoothingSpline = smooth.spline(x, y, spar=0.35)
+
+plot(customer_data_samp$age,customer_data_samp$income)
+lines(predict(lo), col='red', lwd=2)
+lines(smoothingSpline, col='blue', lwd=2)
+```
+
+#### 3.1.3 Nuage de points (ggplot2)
+```{r 3.1.3}
+ggplot(customer_data_samp, aes(x=age, y=income)) +
+    geom_point() +
+    # ajout d'une courbe lissée avec ruban indiquant l'erreur standard
+    geom_smooth() +
+    ggtitle("Income as a function of age")
+```
+
+alternative pour la courbe lissée :
+```{r 3.1.3.alt}
+qplot(data=customer_data_samp, x=age,y = income, geom='smooth', 
+      span =0.5) +
+    ggtitle("Income as a function of age")
+```
+
+#### 3.1.4 Hexbin plot (WVPlots)
+```{r 3.1.4}
+HexBinPlot(customer_data2, "age", "income", "Income as a function of age") +
+    geom_smooth(color="black", se=FALSE)
+```
+
+
+
+#### 3.2 Lien entre une variable quantitative et une variable booléenne
+```{r 3.2}
+#fonction de WVPlots
+BinaryYScatterPlot(customer_data_samp, "age", "health_ins",
+title = "Probability of health insurance by age")
+```
+
+### 3.2 Lien entre variables catégorielles
+
+#### 3.2.1 Diagrammes en barre (ggplot2)
+
+
+```{r 3.2.1}
+# empilés
+ggplot(customer_data, aes(x=marital_status, fill=health_ins)) +
+    geom_bar()
+
+# côte à côte
+ggplot(customer_data, aes(x=marital_status, fill=health_ins)) +
+    geom_bar(position = "dodge")
+
+# pourcentage de remplissage
+ggplot(customer_data, aes(x=marital_status, fill=health_ins)) +
+    geom_bar(position = "fill")
+```
+#### 3.2.2 Diagramme en barre avec facets (ggplot2)
+
+```{r 3.2.2}
+cdata <- subset(customer_data, !is.na(housing_type))
+
+ggplot(cdata, aes(x=marital_status)) +
+    geom_bar(fill="darkgray") +
+    facet_wrap(~housing_type, scale="free_x") +
+    coord_flip()
+```
+
+#### 3.2.3 ShadowPlot (WVPlots)
+```{r 3.2.3}
+ShadowPlot(customer_data, "marital_status", "health_ins",
+title = "Health insurance status by marital status")
+```
+
+
+### 3.3 Lien entre une variable continue et une variable catégorielle
+
+#### 3.3.1 Courbes de densité (ggplot2)
+
+```{r 3.3.1}
+customer_data3 = subset(customer_data2, marital_status %in%
+                    c("Never married", "Widowed"))
+ggplot(customer_data3, aes(x=age, color=marital_status,
+    linetype=marital_status)) +
+    geom_density() + 
+    scale_color_brewer(palette="Dark2")
+```
+
+#### 3.3.2 Courbes de densité avec facet (ggplot2)
+
+```{r 3.3.2}
+ggplot(customer_data2, aes(x=age)) +
+    geom_density() + facet_wrap(~marital_status)
+```
+
+#### 3.3.3 ShadowHist (WVPlots)
+
+```{r 3.3.3}
+ShadowHist(customer_data3, "age", "marital_status",
+    "Age distribution for never married vs. widowed populations", binwidth=5)
+```
+

@@ -1,0 +1,512 @@
+---
+title: "Pré-traitement avancé des données"
+author: "Daniel Pont"
+date: "04/07/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Pré-traitement avancé des données
+
+## 1. Intérêt du package vtreat
+
+vtreat est un package R conçu pour préparer des données du monde réel pour un apprentissage supervisé ou une modélisation prédictive. Il est conçu pour traiter de nombreux problèmes courants, de sorte que le data scientist n’a pas à le faire :
+
+* Valeurs manquantes dans les variables numériques
+* Valeurs extrêmes ou hors plage dans les variables numériques
+* Valeurs manquantes dans les variables catégorielles
+* Valeurs rares dans les données catégorielles 
+* Valeurs catégorielles  nouvelles (valeurs vues lors des tests ou de l'application, mais pas pendant l'apprentissage) 
+* Données catégoriques avec de très nombreuses valeurs possibles
+* Surapprentissage en raison d'un grand nombre de variables
+
+## 2. KDD et la coupe KDD 2009
+
+La coupe KDD 2009 a fourni un ensemble de données sur la gestion de la relation client. Les données de ce concours ont fourni 230 informations sur 50 000 comptes de carte de crédit. À partir de ces fonctionnalités, l'un des objectifs du concours était de prédire l'annulation du compte (appelé "churn" - désabonnement). L'utilisation basique de vtreat consisteà  diviser les données en trois parties: un ensemble pour l'apprentissage du traitement des données, un pour la modélisation et un troisième pour estimer la qualité du modèle sur les nouvelles données.
+
+### 2.1 Chargement des données
+
+```{r 2.1.1, warning=FALSE,message=FALSE}
+d <- read.table('data/orange_small_train.data.gz',
+                  header = TRUE,
+                  sep = '\t',
+                  na.strings = c('NA', ''))
+
+churn <- read.table('data/orange_small_train_churn.labels.txt',header = FALSE, sep = '\t')
+d$churn <- churn$V1
+
+set.seed(729375)
+rgroup <- base::sample(c('train', 'calibrate', 'test'),
+                        nrow(d),
+                        prob = c(0.8, 0.1, 0.1),
+                        replace = TRUE)
+
+dTrain <- d[rgroup == 'train', , drop = FALSE]
+dCal <- d[rgroup == 'calibrate', , drop = FALSE]
+dTrainAll <- d[rgroup %in% c('train', 'calibrate'), , drop = FALSE]
+dTest <- d[rgroup == 'test', , drop = FALSE]
+
+outcome <- 'churn'
+vars <- setdiff(colnames(dTrainAll), outcome)
+rm(list=c('d', 'churn', 'rgroup'))
+```
+
+Avant de commencer la modélisation, nous devons examiner la distribution du résultat ;
+
+```{r 2.1.2, warning=FALSE,message=FALSE}
+outcome_summary <- table(
+                      churn = dTrain[, outcome],
+                      useNA = 'ifany')
+knitr::kable(outcome_summary)
+
+outcome_summary["1"] / sum(outcome_summary)
+```
+
+### 2.2 L'approche de l'éléphant dans le magasin de porcelaine
+
+Pour cette première tentative, nous ne construisons pas de plan de traitement, nous allons donc utiliser à la fois les données dTrain et dCal pour ajuster le modèle (comme l'ensemble dTrainAll).
+
+```{r 2.2.1, warning=FALSE,message=FALSE,eval=FALSE}
+library(wrapr)
+outcome <- 'churn'
+vars <- setdiff(colnames(dTrainAll), outcome)
+formula1 <- mk_formula("churn", vars, outcome_target = 1)
+model1 <- glm(formula1, data = dTrainAll, family = binomial)
+```
+
+Cette approche ne fonctionne pas : elle génère une erreur. Certaines des colonnes que nous essayons d'utiliser comme variables explicatives ne varient pas et ont la même valeur exacte pour chaque ligne ou exemple.
+
+Si l'on essaye de construire le modèle avec une seule variable explicative : 
+
+```{r 2.2.2, warning=FALSE,message=FALSE}
+model2 <- glm((churn == 1) ~ Var1, data = dTrainAll, family = binomial)
+
+summary(model2)
+
+dim(dTrainAll)
+
+head(dTrainAll$Var200)
+
+length(unique(dTrainAll$Var200))
+```
+
+## 3. Pré-traitement basique pour la classification
+
+```{r 3, warning=FALSE,message=FALSE, cache=TRUE}
+library(vtreat)
+
+(parallel_cluster <- parallel::makeCluster(parallel::detectCores()))
+
+treatment_plan <- vtreat::designTreatmentsC(
+                    dTrain,
+                    varlist = vars,
+                    outcomename = "churn",
+                    outcometarget = 1,
+                    verbose = FALSE,
+                    parallelCluster = parallel_cluster)
+
+dTrain_treated <- prepare(treatment_plan,
+                            dTrain,
+                            parallelCluster = parallel_cluster)
+
+head(colnames(dTrain))
+
+head(colnames(dTrain_treated))
+```
+
+
+
+### 3.1 Score Frame
+
+Le plan de traitement est un objet R avec deux objectifs: être utilisé dans la préparation des données par l'instruction prepare(), et fournir un résumé simple et une critique initiale des variables proposées. Ce résumé simple est encapsulé dans la varaible *scoreFrame*. *scoreFrame* répertorie les variables qui seront créées par la méthode prepare(), ainsi que des informations à leur sujet. 
+
+```{r 3.1, warning=FALSE,message=FALSE, cache=TRUE}
+
+score_frame <- treatment_plan$scoreFrame
+
+# Dans notre exemple, Var126 produit deux variables nouvelles ou dérivées: 
+# - Var126 (une version nettoyée du Var126 d'origine qui n'a pas de valeurs NA / manquantes) 
+# - Var116_isBAD (une variable indicatrice qui indique quelles lignes de Var126 contenaient 
+#  à l'origine des valeurs manquantes ou mauvaises ).
+t(subset(score_frame, origName %in% c("Var126", "Var189")))
+
+# Variables Levels (lev)
+#   Var218_lev_x_cJvF et Var218_lev_x_UYBR sont des variables indicatrices qui ont la valeur 1 
+#   lorsque Var218 d'origine a respectivement les valeurs cJvF et UYBR;
+# Variables Impacts (catB)
+#    Le codage catB renvoie une seule nouvelle variable, avec une valeur numérique pour chaque niveau #    possible de la variable catégorielle d'origine. Cette valeur représente le niveau d'information 
+#    d'une cartégorie donnée: les valeurs élevées correspondent à des niveaux plus informatives  
+t(subset(score_frame, origName == "Var218"))
+
+comparison <- data.frame(original218 = dTrain$Var218,impact218 = dTrain_treated$Var218_catB)
+head(comparison)
+```
+
+Pour les problèmes de classification, les valeurs des variables d'impact sont liées aux prédictions d'un modèle de régression logistique qui prédit la valeur réponse à partir de Var218 :
+
+```{r 3.1.1, warning=FALSE,message=FALSE, cache=TRUE}
+treatment_plan_2 <- design_missingness_treatment(dTrain, varlist = vars)
+dtrain_2 <- prepare(treatment_plan_2, dTrain)
+head(dtrain_2$Var218)
+
+
+model <- glm(churn ==1 ~ Var218,
+                data = dtrain_2,
+                family = "binomial")
+
+pred <- predict(model,
+            newdata = dtrain_2,
+            type = "response")
+
+(prevalence <- mean(dTrain$churn == 1) )
+
+logit <- function(p) {
+        log ( p / (1-p) )
+}
+
+# Les codes d'impact de vtreat correspondent aux prédictions  «delta logit» du modèle glm standard. # 
+# Cela permet d'illustrer la mise en œuvre de vtreat
+comparison$glm218 <- logit(pred) - logit(prevalence)
+head(comparison)
+
+```
+
+### 3.2 Utilisation correcte du plan de traitement
+
+**NE RÉUTILISEZ PAS DIRECTEMENT LES MÊMES DONNÉES POUR AJUSTER LE PLAN DE TRAITEMENT ET LE MODÈLE!**
+
+La procédure correcte consiste à ne pas réutiliser dTrain après la conception du plan de traitement des données, mais à la place utiliser dCal_treated pour l'apprentissage supervisé  du modèle de classification / régression : 
+
+```{r 3.2, warning=FALSE,message=FALSE, eval=FALSE}
+dCal_treated <- prepare(treatment_plan,
+                            dCal,
+                            parallelCluster = parallel_cluster)
+```
+
+## 4. Pré-traitement avancé pour la classification
+
+### 4.1 Utilisation de mkCrossFrameCExperiment()
+
+Ici, nous utilisons toutes les données que nous avions initialement allouées pour l'apprentissage et la calibration ( ou étalonnage) en un seul jeu de données dTrainAll. Ensuite, nous évaluerons les données sur le jeu de test.
+
+```{r 4.1, warning=FALSE,message=FALSE,cache=TRUE}
+library(vtreat)
+
+parallel_cluster <- parallel::makeCluster(parallel::detectCores())
+
+cross_frame_experiment <- vtreat::mkCrossFrameCExperiment(
+                            dTrainAll,
+                            varlist = vars,
+                            outcomename = "churn",
+                            outcometarget = 1,
+                            verbose = FALSE,
+                            parallelCluster = parallel_cluster)
+                            
+dTrainAll_treated <- cross_frame_experiment$crossFrame
+
+treatment_plan <- cross_frame_experiment$treatments
+
+score_frame <- treatment_plan$scoreFrame
+
+dTest_treated <- prepare(treatment_plan,
+                          dTest,
+                          parallelCluster = parallel_cluster)                            
+
+library(sigr)
+
+calcAUC(dTrainAll_treated$Var200_catB, dTrainAll_treated$churn)
+
+calcAUC(dTest_treated$Var200_catB, dTest_treated$churn)
+```
+
+### 4.2 Construction d'un modèle
+
+#### 4.2.1 Sélection des variables
+
+```{r 4.2.1, warning=FALSE,message=FALSE}
+k <- 1
+(significance_cutoff <- k / nrow(score_frame))
+
+score_frame$selected <- score_frame$sig < significance_cutoff
+
+suppressPackageStartupMessages(library("dplyr"))
+
+score_frame %>%
+            group_by(., code, selected) %>%
+            summarize(.,
+            count = n()) %>%
+            ungroup(.) %>%
+
+cdata::pivot_to_rowrecs(.,
+          columnToTakeKeysFrom = 'selected',
+          columnToTakeValuesFrom = 'count',
+          rowKeyColumns = 'code',
+          sep = '=')
+```
+
+Le tableau indique pour chaque type de variable convertie combien de variables ont été sélectionnées ou rejetées. En particulier, notez que presque toutes les variables de type clean sont ignorées car  considérées comme étant inutilisables. C'est une preuve possible que les méthodes linéaires peuvent ne pas être suffisantes pour ce problème et que nous devrions plutôt envisager des modèles non linéaires. Dans ce cas, nous pouvons utiliser *value_ variables_C ()* (qui retourne une structure similaire a scoreFrame()*) pour sélectionner des variables, et également utiliser les méthodes avancées d'apprentissage automatique non linéaire du chapitre 10.
+
+#### 4.2.2 Création d'un modèle multi-varié
+
+```{r 4.2.2, warning=FALSE,message=FALSE,cache=TRUE}
+library(wrapr)
+
+newvars <- score_frame$varName[score_frame$selected]
+
+f <- mk_formula("churn", newvars, outcome_target = 1)
+
+model <- glm(f, data = dTrainAll_treated, family = binomial)
+```
+
+
+#### 4.2.3 Evaluation du modèle
+
+```{r 4.2.3, warning=FALSE,message=FALSE}
+library(sigr)
+
+dTest_treated$glm_pred <- predict(model,
+                            newdata = dTest_treated,
+                            type = 'response')
+
+calcAUC(dTest_treated$glm_pred, dTest_treated$churn == 1)
+
+# Calcule l'AUC une deuxième fois, en utilisant une méthode alternative qui 
+# estime également un écart-type ou une barre d'erreur
+permTestAUC(dTest_treated, "glm_pred", "churn", yTarget = 1)
+
+# Ici, nous calculons la meilleure AUC du modèle à variable unique pour la comparaison.
+var_aucs <- vapply(newvars,
+                    function(vi) {
+                      calcAUC(dTrainAll_treated[[vi]], dTrainAll_treated$churn == 1)
+                      }, numeric(1))
+
+(best_train_aucs <- var_aucs[var_aucs >= max(var_aucs)])
+```
+
+#### 4.2.4 Utilisation du modèle de régression logistique comme classificateur
+
+```{r 4.2.4, warning=FALSE,message=FALSE}
+
+# Si nous commettions l'erreur d'utiliser ce modèle comme un classificateur difficile où 
+# tous les individus avec une variable réponse  prédite supérieure à 50% sont considérés à risque, # nous verrions les performances médiocres suivantes :
+
+table(prediction = dTest_treated$glm_pred >= 0.5,
+    truth = dTest$churn)
+
+WVPlots::DoubleDensityPlot(dTest_treated, "glm_pred", "churn",
+                          "glm prediction on test, double density plot")
+
+
+# Le classificateur suivant est meilleur :
+
+table(prediction = dTest_treated$glm_pred>0.15,
+    truth = dTest$churn)
+
+
+WVPlots::PRTPlot(dTest_treated, "glm_pred", "churn",
+                      "glm prediction on test, enrichment plot",
+                      truthTarget = 1,
+                      plotvars = c("enrichment", "recall"),
+                      thresholdrange = c(0, 1.0))
+
+```
+
+## 5. Pré-traitement des données pour la régression
+
+```{r 5, warning=FALSE,message=FALSE,cache=TRUE}
+auto_mpg <- readRDS('data/auto_mpg.RDS')
+knitr::kable(head(auto_mpg))
+
+library("wrapr")
+
+vars <- c("cylinders", "displacement",
+          "horsepower", "weight", "acceleration",
+          "model_year", "origin")
+
+f <- mk_formula("mpg", vars)
+
+model <- lm(f, data = auto_mpg)
+
+auto_mpg$prediction <- predict(model, newdata = auto_mpg)
+
+str(auto_mpg[!complete.cases(auto_mpg), , drop = FALSE])
+
+# Parce que le jeu de données avait des valeurs manquantes, le modèle n'a pas pu retourner une 
+# prédiction pour chaque ligne. Maintenant, nous allons réessayer, en utilisant vtreat 
+# pour pré-traiter les données:
+
+library(vtreat)
+
+cfe <- mkCrossFrameNExperiment(auto_mpg, vars, "mpg",verbose = FALSE)
+
+treatment_plan <- cfe$treatments
+
+auto_mpg_treated <- cfe$crossFrame
+
+score_frame <- treatment_plan$scoreFrame
+
+new_vars <- score_frame$varName
+
+newf <- mk_formula("mpg", new_vars)
+
+new_model <- lm(newf, data = auto_mpg_treated)
+
+auto_mpg$prediction <- predict(new_model, newdata = auto_mpg_treated)
+
+# maintenant une prédiction a été calculée pour chaque ligne :
+str(auto_mpg[!complete.cases(auto_mpg), , drop = FALSE])
+```
+
+## 6. Maîtriser le package "vtreat"
+
+### 6.1 Les phases vtreat
+
+Vtreat a 2 phases : la conception et l'application du plan de traitement.
+
+Pour la conception:
+
+* *designTreatmentsC(*) - Conçoit un plan de traitement variable pour une tâche de classification binaire. Une tâche de classification binaire est l'endroit où nous voulons prédire si un exemple se trouve dans une catégorie donnée, ou prédire la probabilité qu'un exemple se trouve dans la catégorie donnée.
+
+* *designTreatmentsN ()* - Conçoit un plan de traitement variable pour une tâche de régression. Une tâche de régression prédit un résultat numérique, étant donné des exemples de résultats numériques. 
+
+* *designTreatmentsZ ()* - Conçoit un plan de traitement variable simple qui ne prend pas en compte les résultats des données de formation. Ce plan traite les valeurs manquantes et recode les chaînes en tant que variables indicatrices (codage à chaud), mais il ne produit pas de variables d'impact (qui nécessitent une connaissance des résultats des données de formation). 
+
+* *design_missingness_treatment ()* - Conçoit un traitement très simple qui ne traite que les valeurs manquantes, mais n'encode pas à chaud les variables catégorielles. Au lieu de cela, il remplace NA par le jeton "_invalid_". 
+
+* **mkCrossFrameCExperiment ()** - Prépare les données pour la classification, en utilisant une technique de validation croisée afin que les données utilisées pour concevoir le traitement variable puissent être réutilisées en toute sécurité pour former le modèle. 
+
+* **mkCrossFrameNExperiment ()** - Prépare les données pour la régression, en utilisant une technique de validation croisée afin que les données utilisées
+
+### 6.2 Valeurs manquantes
+
+```{r 6.2, warning=FALSE,message=FALSE}
+library(wrapr)
+
+d <- build_frame(
+          "x1" , "x2" , "x3", "y" |
+          1 , "a" , 6 , 10 |
+          NA_real_, "b" , 7 , 20 |
+          3 , NA_character_, 8 , 30 )
+
+knitr::kable(d)
+
+plan1 <- vtreat::design_missingness_treatment(d)
+
+vtreat::prepare(plan1, d) %.>% knitr::kable(.)
+```
+
+### 6.3 Variables indicatrices (ou one-hot encoding)
+
+```{r 6.3, warning=FALSE,message=FALSE}
+d <- build_frame(
+          "x1" , "x2" , "x3", "y" |
+          1 , "a" , 6 , 10 |
+          NA_real_, "b" , 7 , 20 |
+          3 , NA_character_, 8 , 30 )
+
+print(d)
+
+plan2 <- vtreat::designTreatmentsZ(d,
+              varlist = c("x1", "x2", "x3"),
+              verbose = FALSE)
+
+vtreat::prepare(plan2, d)
+```
+
+### 6.4 Variables d'impact
+
+```{r 6.4, warning=FALSE,message=FALSE}
+d <- build_frame(
+                  "x1" , "x2" , "x3", "y" |
+                    1 , "a" , 6 , 10 |
+                    NA_real_, "b" , 7 , 20 |
+                    3 , NA_character_, 8 , 30 )
+
+print(d)
+
+# Voyons l'effet d'un simple exemple de prédiction numérique ou de régression:
+
+plan3 <- vtreat::designTreatmentsN(d,
+                varlist = c("x1", "x2", "x3"),
+                outcomename = "y",
+                codeRestriction = "catN",
+                verbose = FALSE)
+
+vtreat::prepare(plan3, d)
+
+# La variable codée par impact se trouve dans la nouvelle colonne nommée x2_catN. 
+# Notez que dans la première ligne, il est de -10, car la valeur y est 10, 
+# ce qui est 10 en dessous de la valeur moyenne de y
+
+# Le codage par impact pour les variables catégorielles est similaire sauf
+# qu'il est exprimé en unité logarithmique
+
+plan4 <- vtreat::designTreatmentsC(d,
+              varlist = c("x1", "x2", "x3"),
+              outcomename = "y",
+              outcometarget = 20,
+              codeRestriction = "catB",
+              verbose = FALSE)
+
+vtreat::prepare(plan4, d)
+```
+
+### 6.5 Plan de traitement
+
+Le code suivant illustre la structure d'un pla de traitement :
+
+```{r 6.5, warning=FALSE,message=FALSE}
+class(plan4)
+names(plan4)
+plan4$scoreFrame
+```
+
+### 6.6 Cross-frame
+
+Le cross-frame est un élément trouvé dans la liste des objets retournés par les méthodes mkCrossFrame*Experiment (). 
+C'est une innovation qui permet d'utiliser en toute sécurité les mêmes données à la fois pour le prétraitemnt et pour l'apprentissage d'un modèle. Sans cette méthode de validation croisée, il
+faut utiliser deux jeux de données disjoints
+
+```{r 6.6, warning=FALSE,message=FALSE}
+set.seed(2019)
+      d <- data.frame(
+            x_bad = sample(letters, 100, replace = TRUE),
+            y = rnorm(100),
+            stringsAsFactors = FALSE
+            )
+
+      d$x_good <- ifelse(d$y > rnorm(100), "non-neg", "neg")
+head(d)
+
+cfe <- vtreat::mkCrossFrameNExperiment(d,
+              varlist = c("x_bad", "x_good"),
+              outcomename = "y",
+              codeRestriction = "catN",
+              minFraction = 2,
+              verbose = FALSE)
+
+plan6 <- cfe$treatments
+
+training_data2 <- cfe$crossFrame
+
+res2 <- vtreat::patch_columns_into_frame(d, training_data2)
+
+head(res2)
+
+sigr::wrapFTest(res2, "x_bad_catN", "y")
+
+sigr::wrapFTest(res2, "x_good_catN", "y")
+
+# Les tests F sur les données et les statistiques scoreFrame sont consistants :
+
+plan6$scoreFrame
+
+#sigr :: wrapFTest () considère correctement x_bad_catN comme une variable de faible valeur.
+```
