@@ -11,4 +11,4 @@
 
 ## RMarkdown 
 
-<https://danpon.github.io/PracticalDataScienceR/index.html>
+<https://danpon.github.io/PracticalDataScienceR/toc.html>
